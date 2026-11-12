@@ -3977,4 +3977,167 @@ describe('reset', () => {
       'error:stale error',
     );
   });
+
+  it.each(['a resolver', 'a required rule', 'a form level validate'])(
+    'update isValid after reset() in a mount effect when the field is memoised, with %s',
+    async (validation) => {
+      const record = { title: 'Loaded record' };
+      const rules = { required: validation === 'a required rule' };
+
+      const TitleField = React.memo(function TitleField({
+        control,
+      }: {
+        control: Control<{ title: string }>;
+      }) {
+        const { field } = useController({ control, name: 'title', rules });
+        return <input {...field} />;
+      });
+
+      const App = () => {
+        const {
+          control,
+          reset,
+          formState: { isValid },
+        } = useForm<{ title: string }>({
+          defaultValues: record,
+          resolver:
+            validation === 'a resolver'
+              ? async (values) => ({ values, errors: {} })
+              : undefined,
+          validate:
+            validation === 'a form level validate'
+              ? async () => true
+              : undefined,
+        });
+
+        React.useEffect(() => {
+          reset(record);
+        }, [reset]);
+
+        return (
+          <div>
+            <TitleField control={control} />
+            <p>{`valid:${isValid}`}</p>
+          </div>
+        );
+      };
+
+      render(<App />);
+
+      expect(await screen.findByText('valid:true')).toBeVisible();
+    },
+  );
+
+  it('keep isValid false after reset() in a mount effect sets an invalid value the memoised fields do not show', async () => {
+    const settles: Array<() => void> = [];
+
+    const TitleField = React.memo(function TitleField({
+      control,
+    }: {
+      control: Control<{ title: string; id: string }>;
+    }) {
+      const { field } = useController({ control, name: 'title' });
+      return <input {...field} />;
+    });
+
+    const App = () => {
+      const {
+        control,
+        reset,
+        formState: { isValid },
+      } = useForm<{ title: string; id: string }>({
+        defaultValues: { title: 'Loaded record', id: '1' },
+        resolver: (values) => {
+          const result = values.id
+            ? { values, errors: {} }
+            : {
+                values: {},
+                errors: { id: { type: 'required', message: 'required' } },
+              };
+          return new Promise((resolve) => {
+            settles.push(() => resolve(result));
+          });
+        },
+      });
+
+      React.useEffect(() => {
+        reset({ title: 'Loaded record', id: '' });
+      }, [reset]);
+
+      return (
+        <div>
+          <TitleField control={control} />
+          <p>{`valid:${isValid}`}</p>
+        </div>
+      );
+    };
+
+    render(<App />);
+
+    await act(async () => {
+      settles.splice(0).forEach((settle) => settle());
+    });
+    // The pass run again for the reset values settles here.
+    await act(async () => {
+      settles.splice(0).forEach((settle) => settle());
+    });
+
+    expect(screen.getByText('valid:false')).toBeVisible();
+  });
+
+  describe('with keepFieldsRef and an input that does not re-render', () => {
+    // A cached element, as useMemo or the React Compiler leaves it, never re-runs
+    // register()'s ref callback, so it never re-adds its name to the mounted fields.
+    const App = () => {
+      const { register, reset, handleSubmit } = useForm<{ name: string }>({
+        defaultValues: { name: 'Saved' },
+        resetOptions: { keepFieldsRef: true },
+      });
+      const input = React.useMemo(
+        () => (
+          <input aria-label="name" {...register('name', { required: true })} />
+        ),
+        [register],
+      );
+
+      return (
+        <form onSubmit={handleSubmit(noop)}>
+          {input}
+          <button type="button" onClick={() => reset()}>
+            cancel
+          </button>
+          <button>save</button>
+        </form>
+      );
+    };
+
+    it('restore the input on every reset(), not only the first', () => {
+      render(<App />);
+      const input = screen.getByRole('textbox', { name: 'name' });
+      const cancel = screen.getByRole('button', { name: 'cancel' });
+
+      fireEvent.change(input, { target: { value: 'Edited' } });
+      fireEvent.click(cancel);
+      expect(input).toHaveValue('Saved');
+
+      fireEvent.change(input, { target: { value: 'Edited again' } });
+      fireEvent.click(cancel);
+      expect(input).toHaveValue('Saved');
+    });
+
+    it('focus the invalid input on a failed submit after reset()', async () => {
+      render(<App />);
+      const input = screen.getByRole('textbox', { name: 'name' });
+
+      fireEvent.change(input, { target: { value: 'Edited' } });
+      fireEvent.click(screen.getByRole('button', { name: 'cancel' }));
+      fireEvent.change(input, { target: { value: '' } });
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'save' }));
+      });
+
+      expect(input).toHaveFocus();
+    });
+  });
 });

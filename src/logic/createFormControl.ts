@@ -276,6 +276,7 @@ export function createFormControl<
     }
     if (!_options.disabled && (_isTracked('isValid') || shouldUpdateValid)) {
       const callId = ++_setValidCallId;
+      const resetCallId = _resetCallId;
       let isValid: boolean;
       if (_options.resolver) {
         isValid = isEmptyObject((await _runSchema()).errors);
@@ -287,7 +288,13 @@ export function createFormControl<
           eventType: EVENTS.VALID,
         });
       }
-      if (callId === _setValidCallId && isValid !== _formState.isValid) {
+      if (callId !== _setValidCallId) {
+        return;
+      }
+      if (resetCallId !== _resetCallId) {
+        return _setValid(shouldUpdateValid);
+      }
+      if (isValid !== _formState.isValid) {
         _subjects.state.next({
           isValid,
         });
@@ -833,9 +840,11 @@ export function createFormControl<
   const validateForm = async ({
     name,
     eventType,
+    onlyCheckValid,
   }: {
     name: FieldPath<TFieldValues> | FieldPath<TFieldValues>[] | undefined;
     eventType: ValidateFormEventType;
+    onlyCheckValid?: boolean;
   }) => {
     if (_options.validate) {
       const resetCallId = _resetCallId;
@@ -853,6 +862,15 @@ export function createFormControl<
           validateFormCallId !== _validateFormCallId)
       ) {
         return true;
+      }
+
+      if (
+        onlyCheckValid &&
+        (isObject(result)
+          ? Object.values(result).some(Boolean)
+          : isString(result) || !result)
+      ) {
+        return false;
       }
 
       if (isObject(result)) {
@@ -874,6 +892,7 @@ export function createFormControl<
 
         return isValid;
       } else if (isString(result) || !result) {
+        clearErrors(FORM_ERROR_TYPE);
         setError(FORM_ERROR_TYPE, {
           message: result || '',
           type: INPUT_VALIDATION_RULES.validate,
@@ -915,6 +934,7 @@ export function createFormControl<
       const result = await validateForm({
         name,
         eventType,
+        onlyCheckValid,
       });
 
       if (!result) {
@@ -1324,7 +1344,12 @@ export function createFormControl<
       ? formValues(_formValues)
       : formValues;
 
-    if (!deepEqual(_formValues, updatedFormValues)) {
+    if (
+      !deepEqual(_formValues, updatedFormValues) ||
+      options.shouldValidate ||
+      options.shouldDirty ||
+      options.shouldTouch
+    ) {
       _formValues = {
         ..._formValues,
         ...updatedFormValues,
@@ -2177,7 +2202,10 @@ export function createFormControl<
         _formState.errors = { ..._formState.errors };
       }
 
-      if (_names.disabled.size) {
+      if (
+        _names.disabled.size &&
+        (isObject(fieldValues) || Array.isArray(fieldValues))
+      ) {
         for (const name of _names.disabled) {
           unset(fieldValues, name);
         }
@@ -2202,17 +2230,22 @@ export function createFormControl<
           }
         }
 
-        _focusError();
-        setTimeout(_focusError);
+        if (resetCallId === _resetCallId) {
+          _focusError();
+          setTimeout(_focusError);
+        }
       }
 
-      _subjects.state.next({
-        isSubmitted: true,
-        isSubmitting: false,
-        isSubmitSuccessful: isEmptyObject(_formState.errors) && !onValidFailed,
-        submitCount: _formState.submitCount + 1,
-        errors: _formState.errors,
-      });
+      if (resetCallId === _resetCallId) {
+        _subjects.state.next({
+          isSubmitted: true,
+          isSubmitting: false,
+          isSubmitSuccessful:
+            isEmptyObject(_formState.errors) && !onValidFailed,
+          submitCount: _formState.submitCount + 1,
+          errors: _formState.errors,
+        });
+      }
       if (onValidFailed) {
         throw onValidError;
       }
@@ -2261,7 +2294,6 @@ export function createFormControl<
     keepStateOptions = {},
   ) => {
     _resetCallId++;
-    _setValidCallId++;
     const updatedValues = formValues ? cloneObject(formValues) : _defaultValues;
     const cloneUpdatedValues = cloneObject(updatedValues);
     const isEmptyResetValues = isEmptyObject(formValues);
@@ -2355,7 +2387,10 @@ export function createFormControl<
     }
 
     _names = {
-      mount: keepStateOptions.keepDirtyValues ? _names.mount : new Set(),
+      mount:
+        keepStateOptions.keepDirtyValues || keepStateOptions.keepFieldsRef
+          ? _names.mount
+          : new Set(),
       unMount: new Set(),
       array: new Set(),
       registerName: new Set(),
