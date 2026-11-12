@@ -69,6 +69,60 @@ describe('createFormControl', () => {
     expect(form.getErrors()).toEqual({});
   });
 
+  it.each([true, false])(
+    'wait for async form validation before validating named fields: %s',
+    async (formValid) => {
+      let resolveForm!: (valid: boolean) => void;
+      const validate = jest.fn(
+        () =>
+          new Promise<boolean>((resolve) => {
+            resolveForm = resolve;
+          }),
+      );
+      const validateEmail = jest.fn(async () => true);
+      const validatePassword = jest.fn(async () => true);
+      const form = createFormControl({
+        defaultValues: { email: '', password: '' },
+        validate,
+      });
+      form.register('email', { validate: validateEmail });
+      form.register('password', { validate: validatePassword });
+
+      const result = form.trigger(['email', 'password']);
+      expect(validate).toHaveBeenCalledTimes(1);
+      expect(validateEmail).not.toHaveBeenCalled();
+      expect(validatePassword).not.toHaveBeenCalled();
+
+      resolveForm(formValid);
+      expect(await result).toBe(formValid);
+      expect(validate).toHaveBeenCalledTimes(1);
+      expect(validateEmail).toHaveBeenCalledTimes(1);
+      expect(validatePassword).toHaveBeenCalledTimes(1);
+      expect(!!form.getErrors().form).toBe(!formValid);
+    },
+  );
+
+  it('not validate reset fields after pending form validation settles', async () => {
+    let resolveForm!: (valid: boolean) => void;
+    const form = createFormControl({
+      defaultValues: { email: '' },
+      validate: () =>
+        new Promise<boolean>((resolve) => {
+          resolveForm = resolve;
+        }),
+    });
+    form.register('email');
+    const result = form.trigger('email');
+    form.reset({ email: 'new@example.com' });
+    const validateEmail = jest.fn(() => 'New field error');
+    form.register('email', { validate: validateEmail });
+
+    resolveForm(false);
+    await result;
+    expect(validateEmail).not.toHaveBeenCalled();
+    expect(form.getErrors()).toEqual({});
+  });
+
   it('keep field errors when sharing form validation across trigger names', async () => {
     const validate = jest.fn(async () => true);
     const form = createFormControl({
